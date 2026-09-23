@@ -1,0 +1,9 @@
+node_modules/
+.env
+logs/
+state.json.tmp
+
+# NOTE: state.json is deliberately NOT ignored.
+# The GitHub Actions path commits it back to the repo — that commit *is* the
+# persistence layer. It holds only a public test date, no secrets.
+# If you run locally only, you can safely add state.json here instead.

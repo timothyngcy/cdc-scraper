@@ -1,0 +1,21 @@
+{
+  "name": "cdc-scraper",
+  "version": "1.0.0",
+  "scripts": {
+    "check": "node --env-file-if-exists=.env src/check.mjs",
+    "check:jitter": "node --env-file-if-exists=.env src/check.mjs --jitter",
+    "check:dry": "node --env-file-if-exists=.env src/check.mjs --dry-run",
+    "seed": "node --env-file-if-exists=.env src/check.mjs --seed",
+    "telegram:test": "node --env-file-if-exists=.env scripts/telegram-test.mjs",
+    "telegram:chatid": "node --env-file-if-exists=.env scripts/telegram-chatid.mjs",
+    "schedule:install": "bash scripts/install-launchd.sh",
+    "schedule:uninstall": "bash scripts/uninstall-launchd.sh"
+  },
+  "license": "ISC",
+  "description": "Watches the CDC Singapore test-date page and sends a Telegram message when a watched test date changes.",
+  "type": "module",
+  "dependencies": {
+    "playwright": "^1.63.0"
+  },
+  "private": true
+}

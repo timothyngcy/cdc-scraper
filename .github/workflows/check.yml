@@ -1,0 +1,52 @@
+name: CDC test date check
+
+on:
+  schedule:
+    # GitHub cron is UTC. SGT = UTC+8, so 08:00-19:00 SGT = 00:00-11:00 UTC.
+    # GitHub often delays scheduled runs by several minutes under load — that
+    # delay doubles as request jitter, which is fine for this job.
+    - cron: '0 0-11 * * *'
+  workflow_dispatch:
+
+# Serialise runs so two checks can never race on the state commit.
+concurrency:
+  group: cdc-check
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write        # to commit state.json back
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Install Chrome for Playwright
+        run: npx playwright install --with-deps chrome
+
+      - name: Check test date
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          JITTER_MAX_SECONDS: '240'
+        run: node src/check.mjs --jitter
+
+      - name: Persist state
+        if: always()
+        run: |
+          if [[ -n "$(git status --porcelain state.json)" ]]; then
+            git config user.name  "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add state.json
+            git commit -m "chore: update test date state [skip ci]"
+            git push
+          else
+            echo "no state change"
+          fi
