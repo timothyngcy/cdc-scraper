@@ -218,7 +218,161 @@ nothing, and the browser requirement takes away everything that makes serverless
 
 | Option | Cost | IP reputation | Effort | Verdict |
 |--------|------|---------------|--------|---------|
-| **macOS launchd** | free | residential — **verified working** | already written | Start here |
-| **GitHub Actions** | free | datacenter — **needs one test run** | already written | Move here once verified, for always-on |
+| **macOS launchd** | free | residential — **verified working** | already written | Local fallback |
+| **GitHub Actions** | free | Azure — **verified working** | already written | Manual fallback (timer disabled) |
 | Small VPS + cron | ~$5/mo | datacenter, but a stable IP you own | provision + maintain a box | Only if Actions is blocked |
-| Lambda / Cloud Run | ~free | datacenter | container image + state store | Not worth it at this volume |
+| **AWS Lambda + EventBridge** | ~free | AWS — **unverified** | container image + CDK | **Current target** — see below |
+
+
+---
+
+# The AWS path (Lambda + EventBridge Scheduler)
+
+Monitoring is moving from GitHub Actions to AWS. The Actions **timer is disabled**
+(`workflow_dispatch` only), so it stays available as a one-click manual fallback
+without running on its own.
+
+## Why move
+
+GitHub cron is best-effort: scheduled runs are queued at low priority, routinely
+delayed 5-20 minutes, and can be dropped entirely under load. EventBridge Scheduler
+fires reliably, understands `Asia/Singapore` natively (no UTC arithmetic, no second
+cron entry to stop the last run spilling past 19:00), and its **flexible time window**
+randomises each invocation for free — which replaces the in-process jitter sleep
+entirely. On Lambda that matters: sleeping costs GB-seconds.
+
+## Architecture
+
+```
+EventBridge Scheduler  ──invoke──>  Lambda (container: Node 22 + real Chrome)
+  cron(0,30 8-19 ? * * *)                    │
+  tz Asia/Singapore                          ├──> DynamoDB   (state, one item)
+  flexible window: 15 min                    ├──> SSM Params (Telegram creds)
+                                             └──> Telegram API
+```
+
+| Piece | Choice | Why |
+|---|---|---|
+| Compute | Lambda **container image** | Chrome will not fit in a 250MB zip |
+| Architecture | **x86_64**, not arm64 | Google ships no ARM build of Chrome for Linux |
+| Memory | 2048 MB | Chrome is memory-hungry; Lambda CPU scales with memory, so less memory buys a slower run, not a cheaper one |
+| State | DynamoDB, one item | Read and written as a unit; keeps writes atomic at one RCU/WCU |
+| Secrets | SSM SecureString | Free. Secrets Manager charges $0.40/secret/month for no benefit here |
+| Jitter | EventBridge flexible window | Free, vs. paying Lambda to `setTimeout` |
+
+### Code layout after the refactor
+
+`src/monitor.mjs` holds the compare/notify/persist logic and knows nothing about
+where state lives — callers pass a store. So one implementation serves both paths:
+
+```
+src/monitor.mjs          shared logic  (store-agnostic)
+src/scrape.mjs           shared scraper
+src/stores/file.mjs      JSON file   -> CLI + GitHub Actions
+src/stores/dynamodb.mjs  DynamoDB    -> Lambda
+src/check.mjs            CLI entrypoint
+lambda/handler.mjs       Lambda entrypoint
+lambda/Dockerfile        Node 22 + real Chrome
+infra/                   CDK (TypeScript)
+```
+
+## Build it in this order
+
+The whole thing hinges on one untested question: **does Cloudflare accept traffic
+from a Lambda egress IP?** AWS ranges are the most scraper-saturated on the internet.
+Find out before building the rest.
+
+| Step | Command | Gate |
+|---|---|---|
+| 1 | `docker buildx build --platform linux/amd64 -f lambda/Dockerfile -t cdc-lambda .` | image builds |
+| 2 | run locally via Lambda RIE (below) | Chrome starts in-container |
+| 3 | `cdk deploy`, then invoke manually | ⬅ **go/no-go on Cloudflare** |
+| 4 | confirm the schedule fires | done |
+
+If step 3 returns a `BlockedError`, stop. The fix is a NAT Gateway with an Elastic
+IP at ~$32/month, which costs more than everything else combined.
+
+## What to configure — CLI
+
+**1. Credentials** (currently invalid on this machine — `aws sts get-caller-identity`
+returns `InvalidClientTokenId`):
+
+```sh
+aws configure sso            # preferred; or `aws configure` with an IAM user key
+export AWS_REGION=ap-southeast-1
+aws sts get-caller-identity  # must print your account before going further
+```
+
+**2. Store the Telegram credentials** as encrypted parameters. These are created by
+you, not by CDK — secrets in a CloudFormation template are readable in plaintext.
+
+```sh
+aws ssm put-parameter --name /cdc-scraper/telegram-bot-token \
+  --type SecureString --value 'PASTE_TOKEN' --region ap-southeast-1
+
+aws ssm put-parameter --name /cdc-scraper/telegram-chat-id \
+  --type SecureString --value 'PASTE_CHAT_ID' --region ap-southeast-1
+```
+
+**3. Bootstrap and deploy:**
+
+```sh
+cd infra
+npm install
+npx cdk bootstrap aws://<ACCOUNT_ID>/ap-southeast-1   # once per account+region
+npx cdk deploy
+```
+
+`bootstrap` creates the S3 bucket and ECR repo CDK uses for assets. The first
+`deploy` cross-builds the x86_64 image on your Mac (emulated, slow) and pushes it.
+
+**4. Seed state, then test** (function name comes from the stack output):
+
+```sh
+FN=$(aws cloudformation describe-stacks --stack-name CdcScraperStack \
+      --query "Stacks[0].Outputs[?OutputKey=='FunctionName'].OutputValue" --output text)
+
+aws lambda invoke --function-name $FN --payload '{"seed":true}' --cli-binary-format raw-in-base64-out /dev/stdout
+aws lambda invoke --function-name $FN /dev/stdout        # the real go/no-go
+```
+
+A `BlockedError` in the response means Cloudflare rejected the Lambda IP.
+
+**Test the image locally first** (no AWS needed), using the Lambda Runtime Interface
+Emulator built into the base image:
+
+```sh
+docker run --rm -p 9000:8080 --platform linux/amd64 \
+  -e STATE_TABLE=dummy cdc-lambda
+curl -s "http://localhost:9000/2015-03-31/functions/function/invocations" -d '{"dryRun":true}'
+```
+
+This proves Chrome starts in the container. It does **not** test the Lambda IP —
+it exits from your home connection.
+
+## What to configure — Console
+
+CDK creates the infrastructure, so the console is mostly for the things that
+shouldn't live in code:
+
+1. **IAM Identity Center** — create the user/permission set backing `aws configure sso`,
+   if you haven't already. (Only needed once.)
+2. **Billing → Budgets** — set a $1 budget with an email alert. Everything here fits
+   the free tier, so any spend at all means something is wrong (most likely a NAT
+   Gateway). Do this *before* deploying.
+3. **CloudWatch → Log groups** → `/aws/lambda/CdcScraperStack-CheckFunction...` —
+   where scrape output and `BlockedError`s appear. This is your debugging surface.
+4. **EventBridge → Scheduler → Schedules** — confirm the schedule shows
+   `Asia/Singapore` and the 15-minute flexible window, and check *Next trigger*.
+5. **DynamoDB → Tables → Explore items** — see the stored date directly.
+
+Nothing else needs touching; IAM roles, the table, the function and the schedule are
+all created by `cdk deploy`.
+
+## Cost
+
+Free, or close to it: ~23 invocations/day at 2GB for ~30s is roughly 41k GB-seconds
+a month against a 400k free-tier allowance; EventBridge Scheduler's first 14M
+invocations are free; DynamoDB on-demand at ~46 ops/day is negligible; SSM standard
+parameters are free. The only thing that would cost real money is a NAT Gateway
+(~$32/month), which you'd only add if Lambda's egress IP turns out to be blocked.

@@ -1,16 +1,16 @@
 name: CDC test date check
 
 on:
-  schedule:
-    # GitHub cron is UTC. SGT = UTC+8, so 08:00-19:00 SGT = 00:00-11:00 UTC.
-    # Every 30 min, 08:00-19:00 SGT inclusive. Split across two entries so the
-    # last run lands exactly on 19:00 SGT rather than spilling over to 19:30.
-    #   00:00-10:30 UTC = 08:00-18:30 SGT  (22 runs)
-    #   11:00 UTC       = 19:00 SGT        (1 run)
-    # GitHub often delays scheduled runs by several minutes under load — that
-    # delay doubles as request jitter, which is fine for this job.
-    - cron: '0,30 0-10 * * *'
-    - cron: '0 11 * * *'
+  # Scheduled runs are DISABLED — monitoring moved to AWS (Lambda + EventBridge
+  # Scheduler), so this workflow no longer runs on a timer.
+  #
+  # Kept as a manual fallback: if the AWS path is blocked or broken, this is a
+  # one-click way to check, and re-enabling the timer is just uncommenting the
+  # schedule block below.
+  #
+  # schedule:
+  #   - cron: '0,30 0-10 * * *'   # 08:00-18:30 SGT
+  #   - cron: '0 11 * * *'        # 19:00 SGT
   workflow_dispatch:
 
 # Serialise runs so two checks can never race on the state commit.

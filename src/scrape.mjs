@@ -20,6 +20,13 @@ function humanViewport() {
   };
 }
 
+// Lambda's filesystem is read-only apart from /tmp, and there is no user
+// namespace support, so Chrome needs these to start at all. They are sandbox and
+// IPC flags — none of them alter the TLS or JS fingerprint the WAF inspects.
+const LAUNCH_ARGS = process.env.AWS_LAMBDA_FUNCTION_NAME
+  ? ['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--single-process', '--no-zygote']
+  : [];
+
 function looksBlocked(status, title, text) {
   if (status === 403 || status === 429) return true;
   const t = `${title} ${text}`.toLowerCase();
@@ -59,7 +66,13 @@ async function scrapeOnce() {
   // So: clean browser, clean jar, every time. Don't "optimise" either away.
   const browser = await chromium.launch({
     headless: true,
-    channel: 'chrome',           // real Chrome, not bundled Chromium
+    // Locally and on GitHub Actions, Playwright finds the installed Chrome via
+    // `channel`. In the Lambda container Chrome sits at a known path, so
+    // CHROME_PATH is set explicitly and takes precedence.
+    ...(process.env.CHROME_PATH
+      ? { executablePath: process.env.CHROME_PATH }
+      : { channel: 'chrome' }),   // real Chrome, not bundled Chromium
+    args: LAUNCH_ARGS,
   });
   const ctx = await browser.newContext({
     locale: 'en-SG',

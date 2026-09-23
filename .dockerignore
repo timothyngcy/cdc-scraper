@@ -1,0 +1,7 @@
+node_modules
+.git
+.github
+infra
+logs
+.env
+state.json

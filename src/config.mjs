@@ -27,3 +27,6 @@ export const RETRY_BASE_MS = 20_000;       // exponential backoff base between a
 export const FAILURE_ALERT_THRESHOLD = 3;
 
 export const STATE_PATH = new URL('../state.json', import.meta.url).pathname;
+
+// The shape every store returns when nothing has been recorded yet.
+export const EMPTY_STATE = { watched: {}, lastCheckedAt: null, lastChangedAt: null, consecutiveFailures: 0 };

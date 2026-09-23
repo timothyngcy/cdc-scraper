@@ -15,6 +15,9 @@
   "description": "Watches the CDC Singapore test-date page and sends a Telegram message when a watched test date changes.",
   "type": "module",
   "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.1138.0",
+    "@aws-sdk/client-ssm": "^3.1138.0",
+    "@aws-sdk/lib-dynamodb": "^3.1138.0",
     "playwright": "^1.63.0"
   },
   "private": true
